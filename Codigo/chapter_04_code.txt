@@ -1,0 +1,424 @@
+-- SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+-- DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+-- Code presented in Chapter 04
+-- Authors: Ferdinando Urbano
+-- Version 1.0
+
+-- The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+-- with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+-- (https://creativecommons.org/publicdomain/zero/1.0/). 
+-- Nevertheless, the acknowledgement of the authorship is appreciated.
+
+-- Note: to run this code you need the database developed in the previous chapters (2,3).
+-- The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+
+-- You create a table to accommodate information on the deployment of GPS sensors on animals
+CREATE TABLE main.gps_sensors_animals(
+  gps_sensors_animals_id serial NOT NULL, 
+  animals_id integer NOT NULL, 
+  gps_sensors_id integer NOT NULL,
+  start_time timestamp with time zone NOT NULL, 
+  end_time timestamp with time zone,
+  notes character varying, 
+  insert_timestamp timestamp with time zone DEFAULT now(),
+  CONSTRAINT gps_sensors_animals_pkey 
+    PRIMARY KEY (gps_sensors_animals_id ),
+  CONSTRAINT gps_sensors_animals_animals_id_fkey 
+    FOREIGN KEY (animals_id)
+    REFERENCES main.animals (animals_id) 
+    MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT gps_sensors_animals_gps_sensors_id_fkey 
+    FOREIGN KEY (gps_sensors_id)
+    REFERENCES main.gps_sensors (gps_sensors_id) 
+    MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT time_interval_check 
+    CHECK (end_time > start_time)
+);
+COMMENT ON TABLE main.gps_sensors_animals
+IS 'Table that stores information of deployments of sensors on animals.';
+
+-- You populate the table with the data in the test data set 
+-- \tracking_db\data\sensors_animals\gps_sensors_animals.csv
+COPY main.gps_sensors_animals(
+  animals_id, gps_sensors_id, start_time, end_time, notes)
+FROM 
+  'c:\tracking_db\data\sensors_animals\gps_sensors_animals.csv' 
+  WITH (FORMAT csv, DELIMITER ';');
+  
+-- You retrieve the id of the animal related to each GPS position. 
+SELECT 
+  deployment.gps_sensors_id AS sensor, 
+  deployment.animals_id AS animal,
+  data.acquisition_time, 
+  data.longitude::numeric(7,5) AS long, 
+  data.latitude::numeric(7,5) AS lat
+FROM 
+  main.gps_sensors_animals AS deployment,
+  main.gps_data AS data,
+  main.gps_sensors AS gps
+WHERE 
+  data.gps_sensors_code = gps.gps_sensors_code AND
+  gps.gps_sensors_id = deployment.gps_sensors_id AND
+  (
+    (data.acquisition_time >= deployment.start_time AND 
+     data.acquisition_time <= deployment.end_time)
+    OR 
+    (data.acquisition_time >= deployment.start_time AND 
+     deployment.end_time IS NULL)
+  )
+ORDER BY 
+  animals_id, acquisition_time
+LIMIT 10;
+
+-- You create the table to store the GPS positions associated with animals
+CREATE TABLE main.gps_data_animals(
+  gps_data_animals_id serial NOT NULL, 
+  gps_sensors_id integer, 
+  animals_id integer,
+  acquisition_time timestamp with time zone, 
+  longitude double precision,
+  latitude double precision,
+  insert_timestamp timestamp with time zone DEFAULT now(), 
+  CONSTRAINT gps_data_animals_pkey 
+    PRIMARY KEY (gps_data_animals_id),
+  CONSTRAINT gps_data_animals_animals_fkey 
+    FOREIGN KEY (animals_id)
+    REFERENCES main.animals (animals_id) 
+    MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT gps_data_animals_gps_sensors 
+    FOREIGN KEY (gps_sensors_id)
+    REFERENCES main.gps_sensors (gps_sensors_id) 
+    MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION
+);
+COMMENT ON TABLE main.gps_data_animals 
+IS 'GPS sensors data associated to animals wearing the sensor.';
+CREATE INDEX gps_data_animals_acquisition_time_index
+  ON main.gps_data_animals
+  USING BTREE (acquisition_time);
+CREATE INDEX gps_data_animals_animals_id_index
+  ON main.gps_data_animals
+  USING BTREE (animals_id);
+
+-- You populate the table  
+INSERT INTO main.gps_data_animals (
+  animals_id, gps_sensors_id, acquisition_time, longitude, latitude) 
+SELECT 
+  gps_sensors_animals.animals_id,
+  gps_sensors_animals.gps_sensors_id,
+  gps_data.acquisition_time, gps_data.longitude,
+  gps_data.latitude
+FROM 
+  main.gps_sensors_animals, main.gps_data, main.gps_sensors
+WHERE 
+  gps_data.gps_sensors_code = gps_sensors.gps_sensors_code AND
+  gps_sensors.gps_sensors_id = gps_sensors_animals.gps_sensors_id AND
+  (
+    (gps_data.acquisition_time>=gps_sensors_animals.start_time AND 
+     gps_data.acquisition_time<=gps_sensors_animals.end_time)
+    OR 
+    (gps_data.acquisition_time>=gps_sensors_animals.start_time AND 
+     gps_sensors_animals.end_time IS NULL)
+  );
+
+-- You create a schema to store user-defined tools
+CREATE SCHEMA tools
+  AUTHORIZATION postgres;
+  GRANT USAGE ON SCHEMA tools TO basic_user;
+COMMENT ON SCHEMA tools 
+IS 'Schema that hosts all the functions and ancillary tools used for the database.';
+ALTER DEFAULT PRIVILEGES 
+  IN SCHEMA tools 
+  GRANT SELECT ON TABLES 
+  TO basic_user;
+
+-- You create a simple test function
+CREATE FUNCTION tools.test_add(integer, integer) 
+  RETURNS integer AS 
+'SELECT $1 + $2;'
+LANGUAGE SQL
+IMMUTABLE
+RETURNS NULL ON NULL INPUT;
+-- Test the function
+SELECT tools.test_add(2,7);
+
+-- You add some fields, functions and tools to register the timestamp of the last modification (update) of each record
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN update_timestamp timestamp with time zone DEFAULT now();
+CREATE OR REPLACE FUNCTION tools.timestamp_last_update()
+RETURNS trigger AS
+$BODY$BEGIN
+IF NEW IS DISTINCT FROM OLD THEN
+  NEW.update_timestamp = now();
+END IF;
+RETURN NEW;
+END;$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.timestamp_last_update() 
+IS 'When a record is updated, the update_timestamp is set to the current time.';
+CREATE TRIGGER update_timestamp
+  BEFORE UPDATE
+  ON main.gps_data_animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.timestamp_last_update();
+UPDATE main.gps_data_animals 
+  SET update_timestamp = now();
+ALTER TABLE main.gps_sensors 
+  ADD COLUMN update_timestamp timestamp with time zone DEFAULT now();
+ALTER TABLE main.animals 
+  ADD COLUMN update_timestamp timestamp with time zone DEFAULT now();
+ALTER TABLE main.gps_sensors_animals 
+  ADD COLUMN update_timestamp timestamp with time zone DEFAULT now();
+CREATE TRIGGER update_timestamp
+  BEFORE UPDATE
+  ON main.gps_sensors
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.timestamp_last_update();
+CREATE TRIGGER update_timestamp
+  BEFORE UPDATE
+  ON main.gps_sensors_animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.timestamp_last_update();
+CREATE TRIGGER update_timestamp
+  BEFORE UPDATE
+  ON main.animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.timestamp_last_update();
+UPDATE main.gps_sensors 
+  SET update_timestamp = now();
+UPDATE main.gps_sensors_animals 
+  SET update_timestamp = now();
+UPDATE main.animals 
+  SET update_timestamp = now();
+
+-- You create a function to automate the acquisition_time computation when a new record is inserted
+CREATE OR REPLACE FUNCTION tools.acquisition_time_update()
+RETURNS trigger AS
+$BODY$BEGIN
+  NEW.acquisition_time = ((NEW.utc_date + NEW.utc_time) at time zone 'UTC');
+  RETURN NEW;
+END;$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.acquisition_time_update() 
+IS 'When a record is inserted, the acquisition_time is composed from utc_date and utc_time.';
+
+CREATE TRIGGER update_acquisition_time
+  BEFORE INSERT
+  ON main.gps_data
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.acquisition_time_update();
+
+-- You automate the upload from gps_data to gps_data_animals of records that are associated to animals
+CREATE OR REPLACE FUNCTION tools.gps_data2gps_data_animals()
+RETURNS trigger AS
+$BODY$ begin
+INSERT INTO main.gps_data_animals (
+  animals_id, gps_sensors_id, acquisition_time, longitude, latitude)
+SELECT 
+  gps_sensors_animals.animals_id, gps_sensors_animals.gps_sensors_id, NEW.acquisition_time, NEW.longitude, NEW.latitude
+FROM 
+  main.gps_sensors_animals, main.gps_sensors
+WHERE 
+  NEW.gps_sensors_code = gps_sensors.gps_sensors_code AND 
+  gps_sensors.gps_sensors_id = gps_sensors_animals.gps_sensors_id AND
+  (
+    (NEW.acquisition_time >= gps_sensors_animals.start_time AND 
+     NEW.acquisition_time <= gps_sensors_animals.end_time)
+    OR 
+    (NEW.acquisition_time >= gps_sensors_animals.start_time AND 
+     gps_sensors_animals.end_time IS NULL)
+  );
+RETURN NULL;
+END
+$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.gps_data2gps_data_animals() 
+IS 'Automatic upload data from gps_data to gps_data_animals.';
+
+CREATE TRIGGER trigger_gps_data_upload
+  AFTER INSERT
+  ON main.gps_data
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.gps_data2gps_data_animals();
+COMMENT ON TRIGGER trigger_gps_data_upload ON main.gps_data
+IS 'Upload data from gps_data to gps_data_animals whenever a new record is inserted.';
+-- You load a data set from a new GPS sensor
+COPY main.gps_data(
+  gps_sensors_code, line_no, utc_date, utc_time, lmt_date, lmt_time, ecef_x, ecef_y, ecef_z, latitude, longitude, height, dop, nav, validated, sats_used, ch01_sat_id, ch01_sat_cnr, ch02_sat_id, ch02_sat_cnr, ch03_sat_id, ch03_sat_cnr, ch04_sat_id, ch04_sat_cnr, ch05_sat_id, ch05_sat_cnr, ch06_sat_id, ch06_sat_cnr, ch07_sat_id, ch07_sat_cnr, ch08_sat_id, ch08_sat_cnr, ch09_sat_id, ch09_sat_cnr, ch10_sat_id, ch10_sat_cnr, ch11_sat_id, ch11_sat_cnr, ch12_sat_id, ch12_sat_cnr, main_vol, bu_vol, temp, easting, northing, remarks)
+FROM 
+  'C:\tracking_db\data\sensors_data\GSM02927.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+
+-- You enforce consistency checks on the deployments information
+CREATE OR REPLACE FUNCTION tools.gps_sensors_animals_consistency_check()
+RETURNS trigger AS
+$BODY$
+DECLARE
+  deletex integer;
+BEGIN
+SELECT 
+  gps_sensors_animals_id 
+INTO 
+  deletex 
+FROM 
+  main.gps_sensors_animals b
+WHERE
+  (NEW.animals_id = b.animals_id OR NEW.gps_sensors_id = b.gps_sensors_id)
+  AND
+  (
+  (NEW.start_time > b.start_time AND NEW.start_time < b.end_time)
+  OR
+  (NEW.start_time > b.start_time AND b.end_time IS NULL)
+  OR
+  (NEW.end_time > b.start_time AND NEW.end_time < b.end_time)
+  OR
+  (NEW.start_time < b.start_time AND NEW.end_time > b.end_time)
+  OR
+  (NEW.start_time < b.start_time AND NEW.end_time IS NULL )
+  OR
+  (NEW.end_time > b.start_time AND b.end_time IS NULL)
+);
+IF deletex IS not NULL THEN
+  IF TG_OP = 'INSERT' THEN
+    RAISE EXCEPTION 'This row is not inserted: Animal-sensor association not valid: (the same animal would wear two different GPS sensors at the same time or the same GPS sensor would be deployed on two animals at the same time).';
+    RETURN NULL;
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF deletex != OLD.gps_sensors_animals_id THEN
+      RAISE EXCEPTION 'This row is not updated: Animal-sensor association not valid (the same animal would wear two different GPS sensors at the same time or the same GPS sensor would be deployed on two animals at the same time).';
+      RETURN NULL;
+    END IF;
+  END IF;
+END IF;
+RETURN NEW;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.gps_sensors_animals_consistency_check() 
+IS 'Check if a modified or insert row in gps_sensors_animals is valid (no impossible time range overlaps of deployments).';
+
+CREATE TRIGGER gps_sensors_animals_changes_consistency
+  BEFORE INSERT OR UPDATE
+  ON main. gps_sensors_animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.gps_sensors_animals_consistency_check();
+
+-- You can test the procedure trying to insert an invalid deployment record
+-- INSERT INTO main.gps_sensors_animals
+--  (animals_id, gps_sensors_id, start_time, end_time, notes)
+-- VALUES
+--  (2,2,'2004-10-23 20:00:53 +0','2005-11-28 13:00:00 +0','Ovelapping sensor');
+
+-- You synchronize gps_sensors_animals and gps_data_animals
+CREATE OR REPLACE FUNCTION tools.gps_sensors_animals2gps_data_animals()
+RETURNS trigger AS
+$BODY$ begin
+IF TG_OP = 'DELETE' THEN
+  DELETE FROM 
+    main.gps_data_animals 
+  WHERE 
+    animals_id = OLD.animals_id AND
+    gps_sensors_id = OLD.gps_sensors_id AND
+    acquisition_time >= OLD.start_time AND
+    (acquisition_time <= OLD.end_time OR OLD.end_time IS NULL);
+  RETURN NULL;
+END IF;
+
+IF TG_OP = 'INSERT' THEN
+  INSERT INTO 
+    main.gps_data_animals (gps_sensors_id, animals_id, acquisition_time, longitude, latitude)
+  SELECT 
+    NEW.gps_sensors_id, NEW.animals_id, gps_data.acquisition_time, gps_data.longitude, gps_data.latitude
+  FROM 
+    main.gps_data, main.gps_sensors
+  WHERE 
+    NEW.gps_sensors_id = gps_sensors.gps_sensors_id AND
+    gps_data.gps_sensors_code = gps_sensors.gps_sensors_code AND
+    gps_data.acquisition_time >= NEW.start_time AND
+    (gps_data.acquisition_time <= NEW.end_time OR NEW.end_time IS NULL);
+  RETURN NULL;
+END IF;
+
+IF TG_OP = 'UPDATE' THEN
+  DELETE FROM 
+    main.gps_data_animals 
+  WHERE
+    gps_data_animals_id IN (
+      SELECT 
+        d.gps_data_animals_id 
+      FROM
+        (SELECT 
+          gps_data_animals_id, gps_sensors_id, animals_id, acquisition_time 
+        FROM 
+          main.gps_data_animals
+        WHERE 
+          gps_sensors_id = OLD.gps_sensors_id AND
+          animals_id = OLD.animals_id AND
+          acquisition_time >= OLD.start_time AND
+          (acquisition_time <= OLD.end_time OR OLD.end_time IS NULL)
+        ) d
+      LEFT OUTER JOIN
+        (SELECT 
+          gps_data_animals_id, gps_sensors_id, animals_id, acquisition_time 
+        FROM 
+          main.gps_data_animals
+        WHERE 
+          gps_sensors_id = NEW.gps_sensors_id AND
+          animals_id = NEW.animals_id AND
+          acquisition_time >= NEW.start_time AND
+          (acquisition_time <= NEW.end_time OR NEW.end_time IS NULL) 
+        ) e
+      ON 
+        (d.gps_data_animals_id = e.gps_data_animals_id)
+      WHERE e.gps_data_animals_id IS NULL);
+  INSERT INTO 
+    main.gps_data_animals (gps_sensors_id, animals_id, acquisition_time, longitude, latitude) 
+  SELECT 
+    u.gps_sensors_id, u.animals_id, u.acquisition_time, u.longitude, u.latitude 
+  FROM
+    (SELECT 
+      NEW.gps_sensors_id AS gps_sensors_id, NEW.animals_id AS animals_id, gps_data.acquisition_time AS acquisition_time, gps_data.longitude AS longitude, gps_data.latitude AS latitude
+    FROM 
+      main.gps_data, main.gps_sensors
+    WHERE 
+      NEW.gps_sensors_id = gps_sensors.gps_sensors_id AND 
+      gps_data.gps_sensors_code = gps_sensors.gps_sensors_code AND
+      gps_data.acquisition_time >= NEW.start_time AND
+      (acquisition_time <= NEW.end_time OR NEW.end_time IS NULL)
+    ) u
+  LEFT OUTER JOIN
+    (SELECT 
+      gps_data_animals_id, gps_sensors_id, animals_id, acquisition_time 
+    FROM 
+      main.gps_data_animals
+    WHERE 
+      gps_sensors_id = OLD.gps_sensors_id AND
+      animals_id = OLD.animals_id AND
+      acquisition_time >= OLD.start_time AND
+      (acquisition_time <= OLD.end_time OR OLD.end_time IS NULL)
+    ) w
+  ON 
+    (u.gps_sensors_id = w.gps_sensors_id AND 
+    u.animals_id = w.animals_id AND 
+    u.acquisition_time = w.acquisition_time )
+  WHERE 
+    w.gps_data_animals_id IS NULL;
+  RETURN NULL;
+END IF;
+
+END;$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.gps_sensors_animals2gps_data_animals() 
+IS 'When a record in gps_sensors_animals is deleted OR updated OR inserted, this function synchronizes this information with gps_data_animals.';
+
+CREATE TRIGGER synchronize_gps_data_animals
+  AFTER INSERT OR UPDATE OR DELETE
+  ON main.gps_sensors_animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.gps_sensors_animals2gps_data_animals();

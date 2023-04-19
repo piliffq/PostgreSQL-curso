@@ -1,0 +1,159 @@
+-- SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+-- DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+-- Code presented in Chapter 03
+-- Authors: Ferdinando Urbano
+-- Version 1.0
+
+-- The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+-- with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+-- (https://creativecommons.org/publicdomain/zero/1.0/). 
+-- Nevertheless, the acknowledgement of the authorship is appreciated.
+
+-- Note: to run this code you need the database developed in the previous chapter (2).
+-- The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+
+-- You create a table to store data related to GPS sensors
+CREATE TABLE main.gps_sensors(
+  gps_sensors_id integer,
+  gps_sensors_code character varying NOT NULL,
+  purchase_date date,
+  frequency double precision,
+  vendor character varying,
+  model character varying,
+  sim character varying,
+  CONSTRAINT gps_sensors_pkey 
+    PRIMARY KEY (gps_sensors_id ),
+  CONSTRAINT gps_sensor_code_unique 
+    UNIQUE (gps_sensors_code)
+);
+COMMENT ON TABLE main.gps_sensors
+IS 'GPS sensors catalog.';
+
+-- You add a field to record the time when data are inserted into the database
+ALTER TABLE main.gps_sensors 
+  ADD COLUMN insert_timestamp timestamp with time zone DEFAULT now();
+
+-- You import data from the .csv file provided in the test data set  
+COPY main.gps_sensors(
+  gps_sensors_id, gps_sensors_code, purchase_date, frequency, vendor, model, sim)
+FROM 
+  'C:\tracking_db\data\sensors\gps_sensors.csv' 
+  WITH (FORMAT csv, DELIMITER ';');
+
+-- You create a foreign key that links gps_data with gps_sensors
+ALTER TABLE main.gps_data
+  ADD CONSTRAINT gps_data_gps_sensors_fkey 
+  FOREIGN KEY (gps_sensors_code)
+  REFERENCES main.gps_sensors (gps_sensors_code) 
+  MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+-- You add a constraint to be sure that the date of purchase of sensors is after 2000  
+ALTER TABLE main.gps_sensors
+  ADD CONSTRAINT purchase_date_check 
+  CHECK ( purchase_date > '2000-01-01'::date);
+  
+-- You create a table to store data on animals  
+CREATE TABLE main.animals(
+  animals_id integer,
+  animals_code character varying(20) NOT NULL,
+  name character varying(40),
+  sex character(1),
+  age_class_code integer,
+  species_code integer,
+  note character varying,
+  CONSTRAINT animals_pkey PRIMARY KEY (animals_id)
+);
+COMMENT ON TABLE main.animals
+IS 'Animals catalog with the main information on individuals.';
+
+-- You create a schema to store look up tables used in the database
+-- You give by default SELECT privileges on all tables that will be 
+-- create in this schema to basic_user
+CREATE SCHEMA lu_tables
+  AUTHORIZATION postgres;
+  GRANT USAGE ON SCHEMA lu_tables TO basic_user;
+COMMENT ON SCHEMA lu_tables
+IS 'Schema that stores look up tables.';
+ALTER DEFAULT PRIVILEGES 
+  IN SCHEMA lu_tables 
+  GRANT SELECT ON TABLES 
+  TO basic_user;
+
+-- You create the look up tables for the values of the fields species_id
+-- and age_class and populate them with the admitted values
+CREATE TABLE lu_tables.lu_species(
+  species_code integer,
+  species_description character varying,
+  CONSTRAINT lu_species_pkey 
+  PRIMARY KEY (species_code)
+);
+COMMENT ON TABLE lu_tables.lu_species
+IS 'Look up table for species.';
+INSERT INTO lu_tables.lu_species 
+  VALUES (1, 'roe deer');
+INSERT INTO lu_tables.lu_species 
+  VALUES (2, 'rein deer');
+INSERT INTO lu_tables.lu_species 
+  VALUES (3, 'moose');
+CREATE TABLE lu_tables.lu_age_class(
+  age_class_code integer, 
+  age_class_description character varying,
+  CONSTRAINT lage_class_pkey 
+  PRIMARY KEY (age_class_code)
+);
+COMMENT ON TABLE lu_tables.lu_age_class
+IS 'Look up table for age classes.';
+INSERT INTO lu_tables.lu_age_class 
+  VALUES (1, 'fawn');
+INSERT INTO lu_tables.lu_age_class 
+  VALUES (2, 'yearling');
+INSERT INTO lu_tables.lu_age_class 
+  VALUES (3, 'adult');
+
+-- You create foreign keys to link the table animals to
+-- the look up tables  
+ALTER TABLE main.animals
+  ADD CONSTRAINT animals_lu_species 
+  FOREIGN KEY (species_code)
+  REFERENCES lu_tables.lu_species (species_code) 
+  MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;
+ALTER TABLE main.animals
+  ADD CONSTRAINT animals_lu_age_class 
+  FOREIGN KEY (age_class_code)
+  REFERENCES lu_tables.lu_age_class (age_class_code) 
+  MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;
+
+-- You add a constraint to define the possible values of the field sex 
+ALTER TABLE main.animals
+  ADD CONSTRAINT sex_check 
+  CHECK (sex = 'm' OR sex = 'f');
+
+-- You finalize the creation of the table animals and import data
+-- from the .csv provided in the test data set  
+ALTER TABLE main.animals 
+  ADD COLUMN insert_timestamp timestamp with time zone DEFAULT now();
+COPY main.animals(
+  animals_id,animals_code, name, sex, age_class_code, species_code)
+FROM 
+  'C:\tracking_db\data\animals\animals.csv' 
+  WITH (FORMAT csv, DELIMITER ';');
+
+-- You run a query to visualize the table animals with the description
+-- of the coded fields
+SELECT
+  animals.animals_id AS id, 
+  animals.animals_code AS code, 
+  animals.name, 
+  animals.sex, 
+  lu_age_class.age_class_description AS age_class, 
+  lu_species.species_description AS species
+FROM 
+  lu_tables.lu_age_class, 
+  lu_tables.lu_species, 
+  main.animals
+WHERE 
+  lu_age_class.age_class_code = animals.age_class_code 
+  AND
+  lu_species.species_code = animals.species_code;

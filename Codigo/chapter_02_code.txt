@@ -1,0 +1,193 @@
+-- SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+-- DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+-- Code presented in Chapter 02
+-- Authors: Ferdinando Urbano, Holger Dettki
+-- Version 1.0
+
+-- The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+-- with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+-- (https://creativecommons.org/publicdomain/zero/1.0/). 
+-- Nevertheless, the acknowledgement of the authorship is appreciated.
+
+-- The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+-- You create a new database called "gps_tracking_db" with UTF8 encoding
+-- This code cannot be run together with other SQL commands
+CREATE DATABASE gps_tracking_db
+ENCODING = 'UTF8'
+TEMPLATE = template0
+LC_COLLATE = 'C'
+LC_CTYPE = 'C';
+
+-- You create a new schema ("main") and add a comment
+CREATE SCHEMA main;
+COMMENT ON SCHEMA main IS 'Schema that stores all the GPS tracking core data.';
+
+-- You create a new table ("main.gps_data") with the same structure of the raw file coming from GPS sensors
+CREATE TABLE main.gps_data(
+  gps_data_id serial,
+  gps_sensors_code character varying,
+  line_no integer,
+  utc_date date,
+  utc_time time without time zone,
+  lmt_date date,
+  lmt_time time without time zone,
+  ecef_x integer,
+  ecef_y integer,
+  ecef_z integer,
+  latitude double precision,
+  longitude double precision,
+  height double precision,
+  dop double precision,
+  nav character varying(2),
+  validated character varying(3),
+  sats_used integer,
+  ch01_sat_id integer,
+  ch01_sat_cnr integer,
+  ch02_sat_id integer,
+  ch02_sat_cnr integer,
+  ch03_sat_id integer,
+  ch03_sat_cnr integer,
+  ch04_sat_id integer,
+  ch04_sat_cnr integer,
+  ch05_sat_id integer,
+  ch05_sat_cnr integer,
+  ch06_sat_id integer,
+  ch06_sat_cnr integer,
+  ch07_sat_id integer,
+  ch07_sat_cnr integer,
+  ch08_sat_id integer,
+  ch08_sat_cnr integer,
+  ch09_sat_id integer,
+  ch09_sat_cnr integer,
+  ch10_sat_id integer,
+  ch10_sat_cnr integer,
+  ch11_sat_id integer,
+  ch11_sat_cnr integer,
+  ch12_sat_id integer,
+  ch12_sat_cnr integer,
+  main_vol double precision,
+  bu_vol double precision,
+  temp double precision,
+  easting integer,
+  northing integer,
+  remarks character varying
+);
+-- You add a comment to the table
+COMMENT ON TABLE main.gps_data
+IS 'Table that stores raw data as they come from the sensors (plus the ID of the sensor).';
+-- You add a primary key to the table
+ALTER TABLE main.gps_data 
+ADD CONSTRAINT gps_data_pkey 
+PRIMARY KEY(gps_data_id);
+-- You add a new field to keep track of the insert time of each record
+ALTER TABLE main.gps_data 
+ADD COLUMN insert_timestamp timestamp with time zone
+DEFAULT now();
+-- You add a unique constraint on gps_sensors_code and line_no
+ALTER TABLE main.gps_data
+  ADD CONSTRAINT unique_gps_data_record
+  UNIQUE(gps_sensors_code, line_no);
+  
+-- You import the GPS data from the GSM01438.csv file with raw data from the GPS sensor GSM01438
+-- The path (in this case "C:\tracking_db\data\sensors_data\") should be changed according to 
+-- the folder where you extracted the content of the .zip file with the test data set
+COPY main.gps_data(
+  gps_sensors_code, line_no, utc_date, utc_time, lmt_date, lmt_time, ecef_x, ecef_y, ecef_z, latitude, longitude, height, dop, nav, validated, sats_used, ch01_sat_id, ch01_sat_cnr, ch02_sat_id, ch02_sat_cnr, ch03_sat_id, ch03_sat_cnr, ch04_sat_id, ch04_sat_cnr, ch05_sat_id, ch05_sat_cnr, ch06_sat_id, ch06_sat_cnr, ch07_sat_id, ch07_sat_cnr, ch08_sat_id, ch08_sat_cnr, ch09_sat_id, ch09_sat_cnr, ch10_sat_id, ch10_sat_cnr, ch11_sat_id, ch11_sat_cnr, ch12_sat_id, ch12_sat_cnr, main_vol, bu_vol, temp, easting, northing, remarks)
+FROM 
+  'C:\tracking_db\data\sensors_data\GSM01438.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+
+-- You check which is the default date style of your database
+SHOW datestyle;
+-- If it is not "ISO, DMY", then you temporarily define this setting
+SET SESSION datestyle = "ISO, DMY";
+
+-- You import other 3 .csv files with GPS raw data
+-- The path (in this case "C:\tracking_db\data\sensors_data\") should be changed according to 
+-- the folder where you extracted the content of the .zip file with the test data set
+COPY main.gps_data(
+  gps_sensors_code, line_no, utc_date, utc_time, lmt_date, lmt_time, ecef_x, ecef_y, ecef_z, latitude, longitude, height, dop, nav, validated, sats_used, ch01_sat_id, ch01_sat_cnr, ch02_sat_id, ch02_sat_cnr, ch03_sat_id, ch03_sat_cnr, ch04_sat_id, ch04_sat_cnr, ch05_sat_id, ch05_sat_cnr, ch06_sat_id, ch06_sat_cnr, ch07_sat_id, ch07_sat_cnr, ch08_sat_id, ch08_sat_cnr, ch09_sat_id, ch09_sat_cnr, ch10_sat_id, ch10_sat_cnr, ch11_sat_id, ch11_sat_cnr, ch12_sat_id, ch12_sat_cnr, main_vol, bu_vol, temp, easting, northing, remarks)
+FROM 
+  'C:\tracking_db\data\sensors_data\GSM01508.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+COPY main.gps_data(
+  gps_sensors_code, line_no, utc_date, utc_time, lmt_date, lmt_time, ecef_x, ecef_y, ecef_z, latitude, longitude, height, dop, nav, validated, sats_used, ch01_sat_id, ch01_sat_cnr, ch02_sat_id, ch02_sat_cnr, ch03_sat_id, ch03_sat_cnr, ch04_sat_id, ch04_sat_cnr, ch05_sat_id, ch05_sat_cnr, ch06_sat_id, ch06_sat_cnr, ch07_sat_id, ch07_sat_cnr, ch08_sat_id, ch08_sat_cnr, ch09_sat_id, ch09_sat_cnr, ch10_sat_id, ch10_sat_cnr, ch11_sat_id, ch11_sat_cnr, ch12_sat_id, ch12_sat_cnr, main_vol, bu_vol, temp, easting, northing, remarks)
+FROM 
+  'C:\tracking_db\data\sensors_data\GSM01511.csv'
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+COPY main.gps_data(
+  gps_sensors_code, line_no, utc_date, utc_time, lmt_date, lmt_time, ecef_x, ecef_y, ecef_z, latitude, longitude, height, dop, nav, validated, sats_used, ch01_sat_id, ch01_sat_cnr, ch02_sat_id, ch02_sat_cnr, ch03_sat_id, ch03_sat_cnr, ch04_sat_id, ch04_sat_cnr, ch05_sat_id, ch05_sat_cnr, ch06_sat_id, ch06_sat_cnr, ch07_sat_id, ch07_sat_cnr, ch08_sat_id, ch08_sat_cnr, ch09_sat_id, ch09_sat_cnr, ch10_sat_id, ch10_sat_cnr, ch11_sat_id, ch11_sat_cnr, ch12_sat_id, ch12_sat_cnr, main_vol, bu_vol, temp, easting, northing, remarks)
+FROM 
+  'C:\tracking_db\data\sensors_data\GSM01512.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+
+-- You check which is the reference time zone of your database
+SHOW time zone;
+-- You create timestamp objects in different ways
+SELECT 
+  '2012-09-01'::DATE AS date1, 
+  '12:30:29'::TIME AS time1,
+  ('2012-09-01' || ' ' || '12:30:29') AS timetext;
+SELECT
+  '2012-09-01'::DATE + '12:30:29'::TIME AS timestamp1,
+  ('2012-09-01' || ' ' || '12:30:29')::TIMESTAMP WITHOUT TIME ZONE AS timestamp2, 
+  '2012-09-01 12:30:29+00'::TIMESTAMP WITH TIME ZONE AS timestamp3;  
+-- You see the differce between timestamp with time zone and timestamp without time zone
+SELECT 
+  '2012-09-01 12:30:29 +0'::TIMESTAMP WITH TIME ZONE AS timestamp1, 
+  ('2012-09-01'::DATE + '12:30:29'::TIME) AT TIME ZONE 'utc' AS timestamp2,
+  ('2012-09-01 12:30:29'::TIMESTAMP WITHOUT TIME ZONE)::TIMESTAMP WITH TIME ZONE AS timestamp3;
+-- You explore more example of functions associated to time
+SELECT 
+  EXTRACT (MONTH FROM '2012-09-01 12:30:29 +0'::TIMESTAMP WITH TIME ZONE) AS month1, 
+  EXTRACT (EPOCH FROM '2012-09-01 12:30:29 +0'::TIMESTAMP WITH TIME ZONE) AS epoch1; 
+-- You see the current time in the EST time zone
+SET timezone TO 'EST';
+SELECT now() AS time_in_EST_zone;
+-- You see the current time in the UTC time zone
+SET timezone TO 'UTC';
+SELECT now() AS time_in_UTC_zone;
+
+-- You add a new column to the table "main.gps_data" to store the timestamp of the GPS data acquisition
+ALTER TABLE main.gps_data 
+ADD COLUMN acquisition_time timestamp with time zone;
+-- You update this field using time and date from the original file
+UPDATE main.gps_data 
+SET 
+acquisition_time = (utc_date + utc_time) AT TIME ZONE 'UTC';
+
+-- You create two indexes on "main.gps_data" to improve performance in data retrieval
+CREATE INDEX acquisition_time_index
+ON main.gps_data
+USING btree (acquisition_time );
+CREATE INDEX gps_sensors_code_index
+ON main.gps_data
+USING btree (gps_sensors_code);
+
+-- You visualize the first ten records related to the sensor "GSM015112" (ordered by acquisition time)
+SELECT 
+  gps_data_id AS id, gps_sensors_code AS sensor_id, latitude, longitude, acquisition_time
+FROM 
+  main.gps_data
+WHERE 
+  gps_sensors_code = 'GSM01512' and EXTRACT(MONTH FROM acquisition_time) = 5 ORDER BY acquisition_time
+LIMIT 10;
+
+-- You create a new user ("basic_user") and you give "select" permission on all current and future
+-- tables in the schema "main"
+CREATE ROLE basic_user LOGIN
+PASSWORD 'basic_user'
+NOSUPERUSER INHERIT NOCREATEDB NOCREATEROLE NOREPLICATION;
+GRANT SELECT ON ALL TABLES IN SCHEMA main TO basic_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA main GRANT SELECT ON TABLES TO basic_user;
+
+-- You export the content of "main.gps_data" to an external .csv file
+-- You might have to change the path to the file (in this case "C:\tracking_db\test\")
+COPY (
+  SELECT gps_data_id, gps_sensors_code, latitude, longitude, acquisition_time, insert_timestamp 
+  FROM main.gps_data) 
+TO 
+  'C:\tracking_db\test\export_test1.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
