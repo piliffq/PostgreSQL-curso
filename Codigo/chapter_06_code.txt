@@ -1,0 +1,261 @@
+-- SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+-- DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+-- Code presented in Chapter 06
+-- Authors: Ferdinando Urbano, Mathieu Basille, Pierre Racine
+-- Version 1.0
+
+-- The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+-- with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+-- (https://creativecommons.org/publicdomain/zero/1.0/). 
+-- Nevertheless, the acknowledgement of the authorship is appreciated.
+
+-- Note: to run this code you need the database developed in the previous chapters (2,3,4,5).
+-- The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+
+-- You create the schema env_data:
+CREATE SCHEMA env_data
+AUTHORIZATION postgres;
+GRANT USAGE ON SCHEMA env_data TO basic_user;
+COMMENT ON SCHEMA env_data 
+IS 'Schema that stores environmental ancillary information.';
+ALTER DEFAULT PRIVILEGES IN SCHEMA env_data 
+  GRANT SELECT ON TABLES TO basic_user;
+
+-- You import vector and rster data set 
+-- To be run in a command-line interfacem this is not SQL
+-- COMMAND LINE  
+-- "C:\Program Files\PostgreSQL\9.2\bin\shp2pgsql.exe" -s 4326 -I C:\tracking_db\data\env_data\vector\meteo_stations.shp env_data.meteo_stations | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost  
+-- COMMAND LINE
+-- "C:\Program Files\PostgreSQL\9.2\bin\shp2pgsql.exe" -s 4326 -I C:\tracking_db\data\env_data\vector\study_area.shp env_data.study_area | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost 
+-- COMMAND LINE
+-- "C:\Program Files\PostgreSQL\9.2\bin\shp2pgsql.exe" -s 4326 -I C:\tracking_db\data\env_data\vector\roads.shp env_data.roads | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost  
+-- COMMAND LINE
+-- "C:\Program Files\PostgreSQL\9.2\bin\shp2pgsql.exe" -s 4326 -I C:\tracking_db\data\env_data\vector\adm_boundaries.shp env_data.adm_boundaries | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost 
+
+-- You retrieve a summary of the informations from all vector layers
+SELECT * FROM geometry_columns;
+
+-- COMMAND LINE
+-- "C:\Program Files\PostgreSQL\9.2\bin\raster2pgsql.exe" -I -M -C -s 4326 -t 20x20 C:\tracking_db\data\env_data\raster\srtm_dem.tif env_data.srtm_dem | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost
+
+-- COMMAND LINE
+-- "C:\Program Files\PostgreSQL\9.2\bin\raster2pgsql.exe" -I -M -C -s 3035 C:\tracking_db\data\env_data\raster\corine06.tif -t 20x20 env_data.corine_land_cover | "C:\Program Files\PostgreSQL\9.2\bin\psql.exe" -p 5432 -d gps_tracking_db -U postgres -h localhost
+
+-- You create a table to sotre information on land cover legend
+CREATE TABLE env_data.corine_land_cover_legend(
+  grid_code integer NOT NULL,
+  clc_l3_code character(3),
+  label1 character varying,
+  label2 character varying,
+  label3 character varying,
+  CONSTRAINT corine_land_cover_legend_pkey 
+    PRIMARY KEY (grid_code ));
+COMMENT ON TABLE env_data.corine_land_cover_legend
+IS 'Legend of Corine land cover, associating the numeric code to the three nested levels.';
+-- You load the leged from a .csv file
+COPY env_data.corine_land_cover_legend 
+FROM 
+  'C:\tracking_db\data\env_data\raster\corine_legend.csv' 
+  WITH (FORMAT csv, HEADER, DELIMITER ';');
+
+-- You retrieve a summary of the information from all raster layers 
+SELECT * FROM raster_columns;
+
+-- You create a comment for all the new tables
+COMMENT ON TABLE env_data.adm_boundaries 
+IS 'Layer (polygons) of administrative boundaries (comuni).';
+COMMENT ON TABLE env_data.corine_land_cover 
+IS 'Layer (raster) of land cover (from Corine project).';
+COMMENT ON TABLE env_data.meteo_stations 
+IS 'Layer (points) of meteo stations.';
+COMMENT ON TABLE env_data.roads 
+IS 'Layer (lines) of roads network.';
+COMMENT ON TABLE env_data.srtm_dem 
+IS 'Layer (raster) of digital elevation model (from SRTM project).';
+COMMENT ON TABLE env_data.study_area 
+IS 'Layer (polygons) of the boundaries of the study area.';
+
+-- You run some spatial queries on the environmental layers
+SELECT 
+  nome_com
+FROM 
+  env_data.adm_boundaries 
+WHERE 
+  ST_Intersects((ST_SetSRID(ST_MakePoint(11,46), 4326)), geom);
+
+SELECT 
+  station_id, ST_Distance_Spheroid((ST_SetSRID(ST_MakePoint(11,46), 4326)), geom, 'SPHEROID["WGS 84",6378137,298.257223563]')::integer AS distance
+FROM 
+  env_data.meteo_stations
+ORDER BY 
+  distance;
+
+SELECT 
+  ST_Distance((ST_SetSRID(ST_MakePoint(11,46), 4326))::geography, geom::geography)::integer AS distance
+FROM 
+  env_data.roads
+ORDER BY 
+  distance 
+LIMIT 1;
+
+SELECT 
+  ST_Value(srtm_dem.rast,
+  (ST_SetSRID(ST_MakePoint(11,46), 4326))) AS altitude,
+  ST_value(corine_land_cover.rast,
+  ST_transform((ST_SetSRID(ST_MakePoint(11,46), 4326)), 3035)) AS land_cover, 
+  label2, 
+  label3
+FROM 
+  env_data.corine_land_cover, 
+  env_data.srtm_dem, 
+  env_data.corine_land_cover_legend
+WHERE 
+  ST_Intersects(
+    corine_land_cover.rast,
+    ST_Transform((ST_SetSRID(ST_MakePoint(11,46), 4326)), 3035)) AND
+  ST_Intersects(srtm_dem.rast,(ST_SetSRID(ST_MakePoint(11,46), 4326))) AND
+  grid_code = ST_Value(
+    corine_land_cover.rast,
+    ST_Transform((ST_SetSRID(ST_MakePoint(11,46), 4326)), 3035));
+
+SELECT 
+  nome_com, 
+  sum(ST_Length(
+    (ST_Intersection(roads.geom, adm_boundaries.geom))::geography))::integer AS total_length
+FROM 
+  env_data.roads, 
+  env_data.adm_boundaries 
+WHERE 
+  ST_Intersects(roads.geom, adm_boundaries.geom)
+GROUP BY 
+  nome_com 
+ORDER BY 
+  total_length desc;
+
+SELECT 
+  (sum(ST_Area(((gv).geom)::geography)))/1000000 area,
+  min((gv).val) alt_min, 
+  max((gv).val) alt_max,
+  avg((gv).val) alt_avg,
+  stddev((gv).val) alt_stddev
+FROM
+  (SELECT 
+    ST_intersection(rast, geom) AS gv
+  FROM 
+    env_data.srtm_dem,
+    env_data.study_area 
+  WHERE 
+    ST_intersects(rast, geom)
+) foo;
+
+-- You calculate the number of pixel for each land cover class
+SELECT (pvc).value AS lc_class, SUM((pvc).count) AS total, label3
+FROM 
+  (SELECT ST_ValueCount(rast) AS pvc
+  FROM env_data.corine_land_cover, env_data.study_area
+  WHERE ST_Intersects(rast, ST_Transform(geom, 3035))) AS cnts, 
+  env_data.corine_land_cover_legend
+WHERE grid_code = (pvc).value
+GROUP BY (pvc).value, label3
+ORDER BY (pvc).value;
+-- You calculate the percentage of each land cover class
+SELECT 
+  (pvc).value, 
+  (SUM((pvc).count)*100/
+    SUM(SUM((pvc).count)) over ()
+  )::numeric(4,2) AS total_perc, label3
+FROM 
+  (SELECT ST_ValueCount(rast) AS pvc
+  FROM env_data.corine_land_cover, env_data.study_area
+  WHERE ST_Intersects(rast, ST_Transform(geom, 3035))) AS cnts, 
+  env_data.corine_land_cover_legend
+WHERE grid_code = (pvc).value
+GROUP BY (pvc).value, label3
+ORDER BY (pvc).value;
+
+-- You automate the update of environmental attribute in the gps_data_animals table
+-- You create new fields
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN pro_com integer;
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN corine_land_cover_code integer;
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN altitude_srtm integer;
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN station_id integer;
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN roads_dist integer;
+-- You create the function and the trigger
+CREATE OR REPLACE FUNCTION tools.new_gps_data_animals()
+RETURNS trigger AS
+$BODY$
+DECLARE 
+  thegeom geometry;
+BEGIN
+
+IF NEW.longitude IS NOT NULL AND NEW.latitude IS NOT NULL THEN
+  thegeom = ST_SetSRID(ST_MakePoint(NEW.longitude, NEW.latitude), 4326);
+  NEW.geom =thegeom;
+  NEW.pro_com = 
+    (SELECT pro_com::integer 
+    FROM env_data.adm_boundaries 
+    WHERE ST_Intersects(geom,thegeom)); 
+  NEW.corine_land_cover_code = 
+    (SELECT ST_Value(rast,ST_Transform(thegeom,3035)) 
+    FROM env_data.corine_land_cover 
+    WHERE ST_Intersects(ST_Transform(thegeom,3035), rast));
+  NEW.altitude_srtm = 
+    (SELECT ST_Value(rast,thegeom) 
+    FROM env_data.srtm_dem 
+    WHERE ST_Intersects(thegeom, rast));
+  NEW.station_id = 
+    (SELECT station_id::integer 
+    FROM env_data.meteo_stations 
+    ORDER BY ST_Distance_Spheroid(thegeom, geom, 'SPHEROID["WGS 84",6378137,298.257223563]') 
+    LIMIT 1);
+  NEW.roads_dist = 
+    (SELECT ST_Distance(thegeom::geography, geom::geography)::integer 
+    FROM env_data.roads 
+    ORDER BY ST_distance(thegeom::geography, geom::geography) 
+    LIMIT 1);
+END IF;
+
+RETURN NEW;
+END;$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.new_gps_data_animals() 
+IS 'When called by the trigger insert_gps_positions (raised whenever a new position is uploaded into gps_data_animals) this function gets the longitude and latitude values and sets the geometry field accordingly, computing a set of derived environmental information calculated intersecting or relating the position with the environmental ancillary layers.';
+
+-- You test the procedure 
+-- This might take several minutes
+SELECT animals_id, count(animals_id) FROM main.gps_data_animals GROUP BY animals_id;
+
+COPY 
+  (SELECT animals_id, gps_sensors_id, start_time, end_time, notes 
+  FROM main.gps_sensors_animals)
+  TO 
+    'c:/tracking_db/test/gps_sensors_animals.csv' 
+  WITH (FORMAT csv, DELIMITER ';');
+
+DELETE FROM main.gps_sensors_animals;
+
+SELECT * FROM main.gps_data_animals;
+
+COPY main.gps_sensors_animals 
+  (animals_id, gps_sensors_id, start_time, end_time, notes) 
+FROM 
+  'c:/tracking_db/test/gps_sensors_animals.csv' 
+  WITH (FORMAT csv, DELIMITER ';');
+
+SELECT 
+  gps_data_animals_id AS id, acquisition_time, pro_com, corine_land_cover_code AS lc_code, altitude_srtm AS alt, station_id AS meteo, roads_dist AS dist
+FROM 
+  main.gps_data_animals 
+WHERE 
+  geom IS NOT NULL
+LIMIT 10;
+
+SELECT animals_id, count(*) FROM main.gps_data_animals GROUP BY animals_id;

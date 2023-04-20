@@ -1,0 +1,294 @@
+-- SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+-- DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+-- Code presented in Chapter 05
+-- Authors: Ferdinando Urbano, Mathieu Basille
+-- Version 1.0
+
+-- The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+-- with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+-- (https://creativecommons.org/publicdomain/zero/1.0/). 
+-- Nevertheless, the acknowledgement of the authorship is appreciated.
+
+-- Note: to run this code you need the database developed in the previous chapters (2,3,4).
+-- The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+
+-- You enable the Postgis extension in your db
+CREATE EXTENSION postgis;
+
+-- You test some basic spatial functions in Postgis
+SELECT 
+  ST_MakePoint(11.001,46.001) AS point;
+
+SELECT ST_AsEWKT(
+  ST_MakePoint(11.001,46.001)) AS point;
+
+SELECT ST_AsEWKT(
+  ST_SetSRID(
+    ST_MakePoint(11.001,46.001),
+  4326))AS point;
+
+SELECT 
+  ST_X(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.001,46.001), 4326),
+    32632))::integer AS x_utm32,
+  ST_y(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.001,46.001), 4326),
+    32632))::integer AS y_utm32;
+
+-- You create a simple function to automatically find the SRID of the UTM zone at defined coordinates
+CREATE OR REPLACE FUNCTION tools.srid_utm(longitude double precision, latitude double precision)
+RETURNS integer AS
+$BODY$
+DECLARE
+  srid integer;
+  lon float;
+  lat float;
+BEGIN
+  lat := latitude;
+  lon := longitude;
+
+IF ((lon > 360 or lon < -360) or (lat > 90 or lat < -90)) THEN 
+  RAISE EXCEPTION 'Longitude and latitude is not in a valid format (-360 to 360; -90 to 90)';
+ELSEIF (longitude < -180)THEN 
+  lon := 360 + lon;
+ELSEIF (longitude > 180)THEN 
+  lon := 180 - lon;
+END IF;
+
+IF latitude >= 0 THEN 
+  srid := 32600 + floor((lon+186)/6); 
+ELSE
+  srid := 32700 + floor((lon+186)/6); 
+END IF;
+
+RETURN srid;
+END;
+$BODY$
+LANGUAGE plpgsql VOLATILE STRICT
+COST 100;
+COMMENT ON FUNCTION tools.srid_utm(double precision, double precision) 
+IS 'Function that returns the SRID code of the UTM zone where a point (in geographic coordinates) is located. For polygons or line, it can be used giving ST_x(ST_Centroid(the_geom)) and ST_y(ST_Centroid(the_geom)) as parameters. This function is typically used be used with ST_Transform to project elements with no prior knowledge of their position.';
+-- You query the UTM zone of the point at coordinates (11.001,46.001)
+SELECT TOOLS.SRID_UTM(11.001,46.001) AS UTM_zone;
+
+-- You project a point in its UTM zone
+SELECT
+  ST_AsEWKT(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(31.001,16.001), 4326),
+      TOOLS.SRID_UTM(31.001,16.001))
+  ) AS projected_point;
+
+-- You grant select permission to basic_user on a system table  
+GRANT SELECT ON TABLE spatial_ref_sys TO basic_user;
+
+
+-- You compute the distance between two points with different methods
+SELECT 
+  ST_Distance(
+    ST_SetSRID(ST_MakePoint(11.001,46.001), 4326),
+    ST_SetSRID(ST_MakePoint(11.03,46.02), 4326)) AS distance;
+
+SELECT 
+  ST_Distance(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.001,46.001), 4326), 32632),
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.03,46.02), 4326),32632)) AS distance;
+
+SELECT
+  ST_Distance_SPHERE(
+    ST_SetSRID(ST_MakePoint(11.001,46.001), 4326),
+    ST_SetSRID(ST_MakePoint(11.03,46.02), 4326)) AS distance;
+
+SELECT 
+  ST_Distance_Spheroid(
+    ST_SetSRID(ST_MakePoint(11.001,46.001), 4326), 
+    ST_SetSRID(ST_MakePoint(11.03,46.02), 4326),
+    'SPHEROID["WGS 84",6378137,298.2257223563]') AS distance;
+
+SELECT 
+  ST_Distance(
+    ST_SetSRID(ST_MakePoint(11.001,46.001), 4326)::geography,
+    ST_SetSRID(ST_MakePoint(11.03,46.02), 4326)::geography) AS distance;
+
+SELECT
+  ST_Distance(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.001,46.001), 4326), 32632),
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.03,46.02), 4326),32632)) AS distance_2D,
+  ST_3DDistance(
+    ST_Transform(
+      ST_SetSRID(ST_MakePoint(11.001,46.001, 0), 4326), 32632),
+    ST_Transform(
+  ST_SetSRID(ST_MakePoint(11.03,46.02, 1000), 4326),32632)) AS distance_3D;
+
+-- You can create a field with geometry data type in your table 
+ALTER TABLE main.gps_data_animals 
+  ADD COLUMN geom geometry(Point,4326);
+-- You create a spatial index
+CREATE INDEX gps_data_animals_geom_gist
+  ON main.gps_data_animals
+  USING gist (geom );
+-- You populate it 
+UPDATE 
+  main.gps_data_animals
+SET 
+  geom = ST_SetSRID(ST_MakePoint(longitude, latitude),4326)
+WHERE 
+  latitude IS NOT NULL AND longitude IS NOT NULL;
+
+-- You automatize the population of the geometry column so that whenever a new GPS position is updated
+-- in the table main.gps_data_animals, the spatial geometry is also created. 
+CREATE OR REPLACE FUNCTION tools.new_gps_data_animals()
+RETURNS trigger AS
+$BODY$
+DECLARE 
+thegeom geometry;
+BEGIN
+
+IF NEW.longitude IS NOT NULL AND NEW.latitude IS NOT NULL THEN
+  thegeom = ST_SetSRID(ST_MakePoint(NEW.longitude, NEW.latitude),4326);
+  NEW.geom = thegeom;
+END IF;
+
+RETURN NEW;
+END;$BODY$
+LANGUAGE plpgsql VOLATILE
+COST 100;
+COMMENT ON FUNCTION tools.new_gps_data_animals() 
+IS 'When called by a trigger (insert_gps_locations) this function populates the field geom using the values from longitude and latitude fields.';
+
+CREATE TRIGGER insert_gps_location
+  BEFORE INSERT
+  ON main.gps_data_animals
+  FOR EACH ROW
+  EXECUTE PROCEDURE tools.new_gps_data_animals();
+
+-- You test the procedure deleting and reloading the GPS data of an animal 
+DELETE FROM 
+  main.gps_sensors_animals 
+WHERE 
+  animals_id = 2;
+
+SELECT 
+  animals_id, count(animals_id) 
+FROM 
+  main.gps_data_animals
+GROUP BY 
+  animals_id
+ORDER BY 
+  animals_id;
+
+INSERT INTO main.gps_sensors_animals 
+  (animals_id, gps_sensors_id, start_time, end_time, notes) 
+VALUES 
+  (2,1,'2005-03-20 16:03:14 +0','2006-05-27 17:00:00 +0','End of battery life. Sensor not recovered.');
+
+SELECT 
+  animals_id, count(animals_id) num_records, count(geom) num_records_valid 
+FROM 
+  main.gps_data_animals
+GROUP BY 
+  animals_id
+ORDER BY 
+  animals_id;
+
+-- You calculate the centroid of the location set for each animal
+SELECT 
+  animals_id, 
+  ST_AsEWKT(
+    ST_Centroid(
+     ST_Collect(geom))) AS centroid 
+FROM 
+  main.gps_data_animals 
+WHERE 
+  geom IS NOT NULL 
+GROUP BY 
+  animals_id 
+ORDER BY 
+  animals_id;
+
+-- You create a new schema where all the analysis can be accommodated
+CREATE SCHEMA analysis
+  AUTHORIZATION postgres;
+  GRANT USAGE ON SCHEMA analysis TO basic_user;
+COMMENT ON SCHEMA analysis 
+IS 'Schema that stores key layers for analysis.';
+ALTER DEFAULT PRIVILEGES 
+  IN SCHEMA analysis 
+  GRANT SELECT ON TABLES 
+  TO basic_user;
+-- You create a view in which just positions of a single animal are included 
+-- joining the information with the animal and look up tables. 
+CREATE VIEW analysis.view_gps_locations AS 
+  SELECT 
+    gps_data_animals.gps_data_animals_id, 
+    gps_data_animals.animals_id,
+    animals.name,
+    gps_data_animals.acquisition_time at time zone 'UTC' AS time_utc, 
+    animals.sex, 
+    lu_age_class.age_class_description, 
+    lu_species.species_description,
+    gps_data_animals.geom
+  FROM 
+    main.gps_data_animals, 
+    main.animals, 
+    lu_tables.lu_age_class, 
+    lu_tables.lu_species
+  WHERE 
+    gps_data_animals.animals_id = animals.animals_id AND
+    animals.age_class_code = lu_age_class.age_class_code AND
+    animals.species_code = lu_species.species_code AND 
+    geom IS NOT NULL;
+COMMENT ON VIEW analysis.view_gps_locations
+IS 'GPS locations.';
+
+-- You visualize the non spatial content of the view
+SELECT 
+  gps_data_animals_id AS id, 
+  name AS animal,
+  time_utc, 
+  sex, 
+  age_class_description AS age, 
+  species_description AS species
+FROM 
+  analysis.view_gps_locations
+LIMIT 10;
+
+-- You create the view of trajectories
+CREATE VIEW analysis.view_trajectories AS 
+  SELECT 
+    animals_id, 
+    ST_MakeLine(geom)::geometry(LineString,4326) AS geom 
+  FROM 
+    (SELECT animals_id, geom, acquisition_time 
+    FROM main.gps_data_animals 
+    WHERE geom IS NOT NULL 
+    ORDER BY 
+    animals_id, acquisition_time) AS sel_subquery 
+  GROUP BY 
+    animals_id;
+COMMENT ON VIEW analysis.view_trajectories
+IS 'GPS locations - Trajectories.';
+
+-- You create the view of convex hull polygons (or minimum convex polygons):
+CREATE VIEW analysis.view_convex_hulls AS
+  SELECT 
+    animals_id,
+    (ST_ConvexHull(ST_Collect(geom)))::geometry(Polygon,4326) AS geom
+  FROM 
+    main.gps_data_animals 
+  WHERE 
+    geom IS NOT NULL 
+  GROUP BY 
+    animals_id 
+  ORDER BY 
+    animals_id;
+COMMENT ON VIEW analysis.view_convex_hulls
+IS 'GPS locations - Minimum convex polygons.';

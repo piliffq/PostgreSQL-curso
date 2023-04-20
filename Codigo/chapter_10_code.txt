@@ -1,0 +1,361 @@
+## SPATIAL DATABASE FOR GPS WILDLIFE TRACKING DATA, F. Urbano and F. Cagnacci (eds.)
+## DOI: 10.1007/978-3-319-03743-1_4, Springer International Publishing Switzerland 2014
+
+## Code presented in Chapter 10
+## Authors: Bram Van Moorter
+## Version 1.0
+
+## The code in this book is free. You can copy, modify and distribute non-trivial part of the code 
+## with no restrictions, according to the terms of the Creative Commons CC0 1.0 licence
+## (https://creativecommons.org/publicdomain/zero/1.0/). 
+## Nevertheless, the acknowledgement of the authorship is appreciated.
+
+## Note: to run this code you need the database developed in the previous chapters (2,3,4,5,6,7,8,9).
+
+## The test data set is available in the Extra Material page of the book (http://extras.springer.com/)
+
+############################################################################################
+############################################################################################
+### From data management to advanced analytical approaches: connecting R to the database ###
+############################################################################################
+############################################################################################
+
+
+### Introduction: from data management to data analysis
+### ---------------------------------------------------
+
+#script for this figure will be presented in the next section
+
+### The tools: R and adehabitat
+### ---------------------------
+
+#to install the adehabitat packages:
+install.packages("adehabitatLT")
+install.packages("adehabitatHR")
+install.packages("adehabitatHS")
+install.packages("adehabitatMA")
+
+#load the adehabitatLT package for this session
+library(adehabitatLT)
+#this allows you to replicate the exact same "random" numbers as I did for the figure
+set.seed(0)  
+#simulate a correlated random walk of length 500 steps
+simdat <- simm.crw(c(1:501))[[1]]
+#plot the random walk in a dashed line
+plot(simdat$x, simdat$y, type="l" , lty="dashed", xlab="x", ylab="y", asp=T)
+#add to the previous plot the lines connecting every 10th point with double thickness
+lines(simdat$x[seq(1, 501, by=10)], simdat$y[seq(1, 501, by=10)], lwd=2)
+#add to the previous plot the lines connecting every 100th point in grey
+lines(simdat$x[seq(1, 501, by=100)], simdat$y[seq(1, 501, by=100)], lwd=4, col="grey")
+
+
+### connecting R to the database
+### ----------------------------
+
+#load the RPostgreSQL package for this session
+library(RPostgreSQL)
+#specify PostgreSQL as the database driver
+drv <- dbDriver("PostgreSQL")
+#specify the connection using the driver, database name, host, port, user and password
+#you will have to fill in your own specifications 
+#if you followed this book, then you have probably the same database name
+#with a database on your own computer, the host will be localhost on port 5432
+#for the password you certainly have to fill in your own! 
+con <- dbConnect(drv, dbname="gps_tracking_db", host="localhost", port="5432", user="postgres", password="********")
+#list the tables
+dbListTables(con)
+#fetch 5 rows from the gps-data_animals table
+fetch(dbSendQuery(con, "SELECT * FROM main.gps_data_animals LIMIT 5;"), -1)
+#create a query to select the gps positions and their environmental attributes from the database
+rs <- dbSendQuery(con, "SELECT animals_id, acquisition_time,
+                    longitude, latitude,  ST_X(ST_Transform(geom, 32632)) as x32,   
+                    ST_Y(ST_Transform(geom, 32632)) as y32, roads_dist, 
+                    ndvi_modis, corine_land_cover_code, altitude_srtm 
+                    FROM main.gps_data_animals where gps_validity_code = 1;")
+#fetch the data from the rs query
+locs <- fetch(rs,-1)
+#clear the query
+dbClearResult(rs)
+
+#inspect the header (i.e. by default the first 6 lines) of the data
+head(locs)
+#inspect the dates
+head(locs$acquisition_time)
+#load the lubridate package
+library(lubridate)
+#make a table with the month and the hour of the acquisition dates
+table(month(locs$acquisition_time), hour(locs$acquisition_time))
+#convert the local time to the universal time
+locs$UTC_time <- with_tz(locs$acquisition_time, tz="UTC")
+#inspect the original dates
+head(locs$acquisition_time)
+#inspect the UTC dates
+head(locs$UTC_time)
+#make a table with the month and the hour of the UTC converted dates
+table(month(locs$UTC_time), hour(locs$UTC_time))
+
+### Data inspection and exploration
+### -------------------------------
+
+#create an ltrj (the adehabitat class for trajectories) from the data
+ltrj <- as.ltraj(locs[,c("x32", "y32")], locs$UTC_time, locs$animals_id)
+#verify the class
+class(ltrj)
+#verify the class of the objects inside the ltrj list
+class(ltrj[[1]])
+#inspect the header of the ltrj[[1]] data.frame
+head(ltrj[[1]])
+#get the identities of the different animals in the ltrj list
+id(ltrj)
+#get the identity of one animal from the ltrj list
+id(ltrj[1])
+#ask for the summary of ltrj
+(sumy <- summary(ltrj))
+#calculate the total tracking duration in days
+(duration <- difftime(sumy$date.end, sumy$date.begin, units="days"))
+#keep only those individuals with a tracking duration of at least one year
+ltrj <- ltrj[duration>=365]
+#cut the trajectories to exactly one year lenght
+ltrj <- cutltraj(ltrj, "difftime(date, date[1], units='days')>365")
+#verify this:
+  #ask for the summary of ltrj
+  (sumy <- summary(ltrj))
+  #calculate the total tracking duration in days
+  (duration <- difftime(summary(ltrj)$date.end, summary(ltrj)$date.begin, units="days"))
+#create a two panel plot
+par(mfrow=c(1,2))
+#plot the first animal
+plot(ltrj[1])
+#plot the second animal
+plot(ltrj[2])
+#plot a property from the trajectory: the time interval between locations in hours
+plotltr(ltrj[1], which = "dt/60/60", ylim=c(0, 24))
+#add to the previous plot a grey line that is horizontal every four hours 
+abline(h=seq(4, 24, by=4), col="grey")
+#define a function "removeOutside", which will remove any locations that are not part of a regular schedule
+#the regular schedule is defined from a reference date (date.ref) and has a certian time interval in hours (dt_hours)
+#and there is a tolerance of tol_min minutes
+removeOutside <- function(x, date.ref, dt_hours = 1, tol_mins = 5){
+  #the function requires adehabitatLT
+  require(adehabitatLT)
+  #convert x, which is an ltraj to a data.frame 
+  x <- ld(x)
+  #add in a temporary object tmp the tolerance minutes to the date
+  tmp <- x$date + tol_mins*60 
+  #get from this tmp the hour
+  tmp_h <- as.POSIXlt(tmp)$hour
+  #get from tmp the minutes
+  tmp_m <- as.POSIXlt(tmp)$min
+  #get the hours from the reference date
+  hrs <- as.POSIXlt(date.ref)$hour
+  #make a sequence of hours from the reference date hour with the dt_hours as interval
+  hrs <- seq(hrs, 24, by=dt_hours)
+  #keep only those locations where the observed hours are part of the sampling protocol and where the minutes are smaller than the tolerance
+  x <- x[tmp_h %in% hrs & tmp_m<(2*tol_mins),]
+  #convert the dataframe back to an ltraj list
+  x <- dl(x)
+  #return the modified ltraj list
+  return(x)
+  #end of the function
+  }
+#apply the "removeOutside" function to the data with a time interval of 4 hours, a tolerance of 3 minutes, and midnight as a reference date
+ltrj <- removeOutside(ltrj, dt_hours = 4, tol_mins = 3, date.ref=as.POSIXct("2005-01-01 00:00:00", tz="UTC"))
+#plot again the time interval between locations
+plotltr(ltrj[1], which = "dt/60/60", ylim=c(0, 24))
+#add to the previous plot a grey line that is horizontal every four hours 
+abline(h=seq(4, 24, by=4), col="grey")
+#set missing values where the gap in the data was larger than the sampling interval (dt)
+ltrj <- setNA(ltrj, as.POSIXct("2004-01-01 00:00:00", tz="UTC"), dt=4*60*60)
+#show the summary of the ltraj, it now shows missing values
+summary(ltrj)
+#create an object with the dates of ltrj for the first animal
+da <- ltrj[[1]]$date
+#plot the missing values of the first animal, for clarity limit the date to the first 500 locations
+plotNAltraj(ltrj[1], xlim=c(da[1], da[500]))
+#test whether the missing values occur at random, or whether they are clumped
+runsNAltraj(ltrj[1])
+#define a two panel plot
+par(mfrow=c(1,2))
+#plot for each sampling moment (0, 4, 8 etc) the proportion of missing values for the first animal
+plot(c(0, 4, 8, 12, 16, 20), tapply(ltrj[[1]]$x, as.POSIXlt(ltrj[[1]]$date)$hour, function(x)mean(is.na(x))), xlab="hour", ylab="prop. missing", type="o", ylim=c(0,1), main="a")
+#define periods of 10 days for the whole year
+periods <- trunc(as.POSIXlt(ltrj[[1]]$date)$yday/10)
+#plot for each of these 10-day periods the proportion of missing values for the first animal
+plot(tapply(ltrj[[1]]$x, periods, function(x)mean(is.na(x))), xlab="period", ylab="prop. missing", type="o", ylim=c(0,1), main="b")
+  #you can verify these plots also for the other animals  
+#plot the Net Squared Displacement (R2n in adehabitat)
+plotltr(ltrj, which = "R2n")
+#define a two panel plot
+par(mfrow=c(1,2))
+#plot the x coordinate for the first animal through the year
+plot(ltrj[[1]]$date, ltrj[[1]]$x, pch=19, type="o", xlab="Time", ylab="x", main="a")
+#plot the y coordinate for the first animal through the year
+plot(ltrj[[1]]$date, ltrj[[1]]$y, pch=19, type="o", xlab="Time", ylab="y", main="b")
+#remove the missing values from the trajectory
+ltrj2 <- na.omit.ltraj(ltrj)
+#define a six panel plot
+par(mfrow=c(3,2))
+#do a loop with i going from 1 to 5, i.e. for each animal
+for (i in c(1:5)) {
+  #plot the location of animal i, in rainbow colors corresponding to the month of the year
+  plot(ltrj2[[i]][c("x","y")], col=rainbow(12)[as.POSIXlt(ltrj2[[i]]$date)$mon+1], pch=19, asp=T)
+  #connect the locations of this animal byy segments corresponding to the month of the year
+  segments(ltrj2[[i]]$x[-nrow(ltrj[[i]])], ltrj2[[i]]$y[-nrow(ltrj2[[i]])], ltrj2[[i]]$x[-1], ltrj2[[i]]$y[-1], col=rainbow(12)[as.POSIXlt(ltrj2[[i]]$date[-1])$mon+1])
+  #number the panels a to e corresponding to the animal
+  title(c("a", "b", "c", "d", "e")[i])
+  }
+#add to the last panel the legend, which starts by an empty plot
+plot(c(0:100),c(0:100), type="n", xaxt="n", yaxt="n", xlab="", ylab="", bty="n")
+#the twelve months of the year
+mon <- c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+#plot the first column of 6 months in the corresponding color
+legend(x=20, y=90,  legend=mon[c(0:5)+1], pch=19, col=rainbow(12)[1:6], bty="n")
+#plot the second column of last 6 months in the corresponding color
+legend(x=60, y=90,  legend=mon[c(6:11)+1], pch=19, col=rainbow(12)[7:12], bty="n")
+
+### Home range estimation
+### ---------------------
+
+#load the home range library
+library(adehabitatHR)
+#load the spatial library
+library(sp)
+#convert the ltraj to a dataframe
+trj <- ld(ltrj)
+#remove the missing locations from the dataframe
+trj <- trj[!is.na(trj$x),]
+#compute the kernel utilization distribution for each animal with a smoothing factor of 100
+(kUD <- kernelUD(SpatialPointsDataFrame(trj[c("x","y")], data=data.frame(id=trj$id)), h =100, grid=200, kern = "epa"))
+#plot the utilization distribution for the first animal
+image(kUD[[1]])
+#calculate for each location the corresponding day of the year (this function is dependent upon the lubridate package)
+trj$yday <- yday(trj$date)
+#define summer between yearday 150 and 300
+trj$season <- ifelse(trj$yday>150 & trj$yday<300, "summer", NA)
+#define winter between yearday 350 and 100
+trj$season <- ifelse(trj$yday>350 | trj$yday<100, "winter", trj$season)
+#remove those locations that fall in between both seasons
+trj <- trj[!is.na(trj$season),]
+#calculate the kernel utilization distribution for each individual and each season separately
+(kUD <- kernelUD(SpatialPointsDataFrame(trj[c("x","y")], data=data.frame(id=paste(trj$id, trj$season))),h =100, grid=200, kern = "epa"))
+#calculate the area within the 50, 75 and 95 percent contours of the utilization distribution
+area <- kernel.area(kUD, percent = c(50, 75, 95), unin = "m", unout = "ha")
+#create a dataframe with the areas, id and the season
+(areas <- data.frame(A50=unlist(area[1,]), A75=unlist(area[2,]), A95=unlist(area[3,]), id=rep(c(1:5), each=2), seas=rep(c("S", "W"), 5)))
+#define a plot with 3 panels
+par(mfrow=c(1,3))
+#make a boxplot of the area in the 50 percent controur for both seasons
+boxplot(areas$A50~areas$seas, cex=2, main="a")
+#make a boxplot of the area in the 75 percent controur for both seasons
+boxplot(areas$A75~areas$seas, cex=2, main="b")
+#make a boxplot of the area in the 95 percent controur for both seasons
+boxplot(areas$A95~areas$seas, cex=2, main="c")
+
+### Habitat use and habitat selection analysis
+### ------------------------------------------
+
+#convert the ltraj to a dataframe
+trj <- ld(ltrj)
+#merge the trajectory with the environmental information stored within the locs dataframe
+trj <- merge(trj, locs, by.x=c("id", "date"), by.y=c("animals_id", "UTC_time"), all.x=T)
+#load the library lattice for plotting (note: many people find ggplot2 more intuitive)
+library(lattice)
+#plot for each individual the altitude against the distance from the road
+xyplot(roads_dist ~ altitude_srtm| factor(id), xlab = "altitude", ylab = "dist. road", col = 1, strip = function(bg = "white", ...) strip.default(bg = "white", ...), data = trj)
+#plot for each individual the altitude against the day of the year
+xyplot(altitude_srtm ~ as.POSIXlt(acquisition_time)$yday | factor(id), xlab = "day of year", ylab = "altitude", col = 1, strip = function(bg = "white", ...) strip.default(bg = "white", ...), data = trj)
+#define the seasons as before:
+  #day of the year
+  trj$yday <- yday(trj$date)
+  #define the summer
+  trj$season <- ifelse(trj$yday>150 & trj$yday<300, "summer", NA)
+  #define the winter
+  trj$season <- ifelse(trj$yday>350 | trj$yday<100, "winter", trj$season)
+  #remove those locations inbetween both seasons
+  trj2 <- trj[!is.na(trj$season),]
+#fit a linear model to the altitude (as noted in the text a t-test could suffice for this simple case)
+fit <- lm(altitude_srtm ~ as.factor(season), data=trj2)
+#show a summary of the linear model 
+summary(fit)
+#remove the missing locations
+trj2 <- na.omit(trj[,c("id", "x","y")])
+#prepare a spatial points dataframe for the home range estimation
+sptrj <- SpatialPointsDataFrame(SpatialPoints(trj2[,c("x","y")]), data=data.frame(id=trj2$id))
+#calculate the minimum convex polygon that contains all locations for each individual
+ranges <- mcp(sptrj, percent=100)
+#for easy replication of the results set the random number generator to the same value
+set.seed(0)
+#sample 2000 random locations from each individual home range
+rndpts <- lapply(c(1:5), function(x, ranges){spsample(ranges[ranges@data$id==x,], n=2000, type="random", iter=100)},ranges=ranges)
+#extract the coordinates from the random points and add an identifier for the animal as a column
+rndpts <- lapply(c(1:5), function(x, rndpts){data.frame(rndpts[[x]]@coords, id=x)}, rndpts=rndpts)
+#paste the different animals one after the other
+rndpts <- do.call("rbind", rndpts)
+#plot the MCP home ranges
+plot(ranges)
+#add the first 100 random points to the previous plot (i.e. from animal number 1)
+points(rndpts[c(1:100), c("x", "y")], pch=16)
+#add an individual identifier to each random point
+rndpts$nb <- c(1:nrow(rndpts))
+#write the random points to the database
+dbWriteTable(con, c("analysis", "rndpts_tmp"), rndpts)
+#add a geometry column of the random points to the table
+dbSendQuery(con, "ALTER TABLE analysis.rndpts_tmp ADD COLUMN geom geometry(point, 4326);")
+#fill in the geometry column with the random points that are provided in UTM32
+dbSendQuery(con, "UPDATE analysis.rndpts_tmp SET geom = st_transform((st_setsrid(st_makepoint(x,y),23032)),4326);")
+#get the altitude at the location of the random points, ordered on the random point identifier
+altitude <- fetch(dbSendQuery(con, "SELECT st_value(srtm_dem.rast, geom) as altitude FROM env_data.srtm_dem, analysis.rndpts_tmp WHERE st_intersects(srtm_dem.rast,geom) ORDER BY nb;"), -1)
+#get the landcover at the location of the random points, ordered on the random point identifier
+landcover <- fetch(dbSendQuery(con, "SELECT st_value(corine_land_cover.rast, st_transform(geom,3035)) as landcover FROM env_data.corine_land_cover, analysis.rndpts_tmp WHERE st_intersects(corine_land_cover.rast, st_transform(geom,3035)) ORDER BY nb;"), -1)
+#get the minimum distance to a road at the location of the random points, ordered on the random point identifier
+mindist <- fetch(dbSendQuery(con, "SELECT min(distance) as dist_roads FROM (SELECT nb, st_distance(roads.geom::geography, rndpts_tmp.geom::geography)::integer as distance FROM env_data.roads, analysis.rndpts_tmp) AS a GROUP BY a.nb ORDER BY nb;"), -1)
+#create a new dataframe with the added environmental variables
+rndpts <- cbind(rndpts, altitude, landcover, mindist)
+#inspect the header of the random locations
+head(rndpts)
+#if desired you can now remove the random points table from the database
+dbRemoveTable(con, c("analysis", "rndpts_tmp"))
+#remove the missing values from the dataframe of animal locations with environmental data
+trj <- na.omit(trj[,c("id", "x", "y", "roads_dist", "corine_land_cover_code", "altitude_srtm", "season")])
+#rename the dataframe for easier access to the columns
+names(trj) <- c("id", "x", "y", "dist_roads", "landcover", "altitude", "season")
+#convert the landcover to a factor, which contains all the levels present in the area
+trj$landcover <- factor(trj$landcover, levels=c(18, 21, 23:27, 29, 31, 32))
+#allocate the random locations to each season
+rndpts$season <- c("summer", "winter") 
+#convert the landcover to a factor, which contains all the levels present in the area
+rndpts$landcover <- factor(rndpts$landcover, levels=c(18, 21, 23:27, 29, 31, 32))
+#make a table of the frequency of each landcover type for each individual in the used locations during winter
+use_win <- table(trj$id[trj$season=="winter"], trj$landcover[trj$season=="winter"])
+#make a table of the frequency of each landcover type for each individual in the available locations during winter
+ava_win <- table(rndpts$id[rndpts$season=="winter"],rndpts$landcover[rndpts$season=="winter"])
+#make a table of the frequency of each landcover type for each individual in the used locations during summer
+use_sum <- table(trj$id[trj$season=="summer"], trj$landcover[trj$season=="summer"])
+#make a table of the frequency of each landcover type for each individual in the available locations during summer
+ava_sum <- table(rndpts$id[rndpts$season=="summer"],rndpts$landcover[rndpts$season=="summer"])
+#to avoid division by zero, we add a small number to each element in the table
+use_win <- use_win+0.01
+#to avoid division by zero, we add a small number to each element in the table
+ava_win <- ava_win+0.01
+#to avoid division by zero, we add a small number to each element in the table
+use_sum <- use_sum+0.01
+#to avoid division by zero, we add a small number to each element in the table
+ava_sum <- ava_sum+0.01
+#load the library adehabitatHS
+library(adehabitatHS)
+#the selection ratios for each individual and all pooled during winter
+sr_win <- widesIII(use_win,ava_win, avknown = FALSE, alpha = 0.05)
+#the selection ratios for each individual and all pooled during summer
+sr_sum <- widesIII(use_sum,ava_sum, avknown = FALSE, alpha = 0.05)
+#plot the population level selection ratios for the winter season
+plot(c(1:10)-0.1, sr_win$wi, xaxt="n", ylab="Selection Ratio", xlab="Habitat type", col="blue", ylim=c(0,4))
+#add the labels to the x-axis for the different habitat categories
+axis(1, at=c(1:10), labels=c(18, 21, 23:27, 29, 31, 32))
+#add to the figure a grey horizontal line at 1, which means no selection
+abline(h=1, col="dark grey")
+#add the summer selection ratios
+points(c(1:10)+0.1, sr_sum$wi, col="red")
+#add the confidence interval for the winter selection ratios
+segments(c(1:10)-0.1, sr_win$ICwiupper, c(1:10)-0.1, sr_win$ICwilower, col="blue")
+#add the confidence interval for the summer selection ratios
+segments(c(1:10)+0.1, sr_sum$ICwiupper, c(1:10)+0.1, sr_sum$ICwilower, col="red")
